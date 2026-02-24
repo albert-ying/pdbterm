@@ -33,6 +33,7 @@ enum class ColorScheme {
 };
 
 enum class PaletteType {
+    PYWAL,
     NEON,
     COOL,
     WARM,
@@ -77,9 +78,10 @@ private:
 
     // Colors and palettes
     std::vector<RGB> palette_colors;
+    std::vector<RGB> pywal_colors;  // cached pywal originals
     RGB bg_color;
     RGB fg_color;
-    PaletteType palette_type = PaletteType::NEON;
+    PaletteType palette_type = PaletteType::PYWAL;
     ColorScheme color_scheme = ColorScheme::RAINBOW;
     void load_colors();
     void apply_palette();

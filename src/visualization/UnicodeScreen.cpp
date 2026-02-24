@@ -102,11 +102,49 @@ static RGB boost_color(RGB c, RGB bg) {
 void UnicodeScreen::load_colors() {
     bg_color = {18, 18, 24};
     fg_color = {180, 180, 180};
+
+    // Try to load pywal colors
+    const char* home = getenv("HOME");
+    if (home) {
+        std::string colors_path = std::string(home) + "/.cache/wal/colors";
+        std::ifstream file(colors_path);
+        if (file.is_open()) {
+            std::vector<RGB> wal_colors;
+            std::string line;
+            while (std::getline(file, line)) {
+                if (line.empty() || line[0] != '#' || line.size() < 7) continue;
+                unsigned int r, g, b;
+                if (sscanf(line.c_str(), "#%02x%02x%02x", &r, &g, &b) == 3)
+                    wal_colors.push_back({(uint8_t)r, (uint8_t)g, (uint8_t)b});
+            }
+            if (wal_colors.size() >= 16) {
+                bg_color = wal_colors[0];
+                fg_color = wal_colors[7];
+                pywal_colors.clear();
+                pywal_colors.push_back(boost_color(wal_colors[8], bg_color));
+                for (int i = 1; i <= 6; i++)
+                    pywal_colors.push_back(boost_color(wal_colors[i], bg_color));
+            } else if (wal_colors.size() >= 8) {
+                bg_color = wal_colors[0];
+                fg_color = wal_colors[7];
+                pywal_colors.clear();
+                for (int i = 1; i <= 6; i++)
+                    pywal_colors.push_back(boost_color(wal_colors[i], bg_color));
+            }
+        }
+    }
+    // Default to neon if no pywal
+    if (pywal_colors.empty()) palette_type = PaletteType::NEON;
     apply_palette();
 }
 
 void UnicodeScreen::apply_palette() {
     switch (palette_type) {
+        case PaletteType::PYWAL:
+            palette_colors = pywal_colors.empty()
+                ? std::vector<RGB>{{255,70,70},{255,140,50},{255,210,60},{80,220,80},{50,200,220},{80,120,255},{160,80,255}}
+                : pywal_colors;
+            break;
         case PaletteType::NEON:
             palette_colors = {{255,70,70},{255,140,50},{255,210,60},{80,220,80},{50,200,220},{80,120,255},{160,80,255},{255,80,180}};
             break;
@@ -422,6 +460,7 @@ const char* UnicodeScreen::color_scheme_name() {
 
 const char* UnicodeScreen::palette_name() {
     switch (palette_type) {
+        case PaletteType::PYWAL:  return "pywal";
         case PaletteType::NEON:   return "neon";
         case PaletteType::COOL:   return "cool";
         case PaletteType::WARM:   return "warm";
