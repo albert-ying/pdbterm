@@ -562,8 +562,10 @@ bool UnicodeScreen::load_specific_pdb(const std::string& pdb_id) {
 bool UnicodeScreen::write_framebuffer_png(const std::string& path) {
     // Force 1280x720 for headless rendering
     int saved_bw = buf_width, saved_bh = buf_height;
+    int saved_sc = sidebar_cols;
     buf_width = 1280;
     buf_height = 720;
+    sidebar_cols = 0;  // center in full frame for screenshots
     framebuffer.resize(buf_width * buf_height);
 
     clear_framebuffer();
@@ -595,6 +597,7 @@ bool UnicodeScreen::write_framebuffer_png(const std::string& path) {
     // Restore
     buf_width = saved_bw;
     buf_height = saved_bh;
+    sidebar_cols = saved_sc;
     framebuffer.resize(buf_width * buf_height);
 
     return error == 0;
@@ -843,6 +846,7 @@ static void project_atoms(std::vector<Protein*>& data,
                            float zoom_level, float focal_offset,
                            std::vector<float>& pan_y,
                            int buf_width, int buf_height,
+                           int center_x_offset,
                            std::vector<std::vector<ProjAtom>>& chains_out,
                            int& global_total) {
     global_total = 0;
@@ -869,7 +873,7 @@ static void project_atoms(std::vector<Protein*>& data,
     }
 
     float fovRads = 1.0f / tanf((FOV / zoom_level) * 0.5f / 180.0f * PI);
-    float half_w = buf_width * 0.5f;
+    float half_w = buf_width * 0.5f + center_x_offset;
     float half_h = buf_height * 0.5f;
     float scale = std::min(half_w, half_h);
     int global_idx = 0;
@@ -915,7 +919,7 @@ void UnicodeScreen::project_backbone() {
     std::vector<std::vector<ProjAtom>> chains;
     int global_total;
     project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
-                  buf_width, buf_height, chains, global_total);
+                  buf_width, buf_height, sidebar_cols, chains, global_total);
 
     for (auto& chain : chains) {
         for (size_t i = 0; i < chain.size(); i++) {
@@ -940,7 +944,7 @@ void UnicodeScreen::project_grid() {
     std::vector<std::vector<ProjAtom>> chains;
     int global_total;
     project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
-                  buf_width, buf_height, chains, global_total);
+                  buf_width, buf_height, sidebar_cols, chains, global_total);
 
     struct FlatAtom {
         int sx, sy;
@@ -1043,7 +1047,7 @@ void UnicodeScreen::project_surface() {
     std::vector<std::vector<ProjAtom>> chains;
     int global_total;
     project_atoms(data, pan_x, zoom_level, focal_offset, pan_y,
-                  buf_width, buf_height, chains, global_total);
+                  buf_width, buf_height, sidebar_cols, chains, global_total);
 
     float r_scale = use_sixel ? 4.0f : 1.0f;
     for (auto& chain : chains) {
@@ -1062,7 +1066,7 @@ void UnicodeScreen::project_surface() {
 
 // --- Braille rendering ---
 
-void UnicodeScreen::render_braille() {
+std::string UnicodeScreen::render_braille() {
     std::string out;
     out.reserve(term_cols * (term_rows - info_rows) * 30);
     out += "\033[H";
@@ -1123,12 +1127,12 @@ void UnicodeScreen::render_braille() {
     }
 
     out += "\033[0m";
-    write(STDOUT_FILENO, out.c_str(), out.size());
+    return out;
 }
 
 // --- Sixel rendering ---
 
-void UnicodeScreen::render_sixel() {
+std::string UnicodeScreen::render_sixel() {
     std::vector<RGBA> pixels(buf_width * buf_height);
     for (int i = 0; i < buf_width * buf_height; i++) {
         if (framebuffer[i].active) {
@@ -1142,7 +1146,7 @@ void UnicodeScreen::render_sixel() {
     out += "\033[H";
     out += SixelEncoder::encode(pixels, buf_width, buf_height,
                                 bg_color.r, bg_color.g, bg_color.b);
-    write(STDOUT_FILENO, out.c_str(), out.size());
+    return out;
 }
 
 // --- View mode name ---
@@ -1158,7 +1162,7 @@ const char* UnicodeScreen::view_mode_name() {
 
 // --- Info overlay ---
 
-void UnicodeScreen::draw_info_overlay() {
+std::string UnicodeScreen::render_info_overlay() {
     std::string out;
     out += "\033[0m\n";
 
@@ -1201,7 +1205,7 @@ void UnicodeScreen::draw_info_overlay() {
         if (i < data.size() - 1) out += "\n";
     }
 
-    write(STDOUT_FILENO, out.c_str(), out.size());
+    return out;
 }
 
 // --- Left sidebar with protein info ---
@@ -1224,8 +1228,8 @@ static std::vector<std::string> word_wrap(const std::string& text, int width) {
     return lines;
 }
 
-void UnicodeScreen::draw_sidebar() {
-    if (data.empty()) return;
+std::string UnicodeScreen::render_sidebar() {
+    if (data.empty()) return "";
     auto* p = data[0];
 
     std::string title = p->get_title();
@@ -1313,7 +1317,7 @@ void UnicodeScreen::draw_sidebar() {
     }
 
     out += "\033[0m";
-    write(STDOUT_FILENO, out.c_str(), out.size());
+    return out;
 }
 
 // --- Main draw ---
@@ -1321,6 +1325,10 @@ void UnicodeScreen::draw_sidebar() {
 void UnicodeScreen::draw_screen() {
     int old_w = buf_width, old_h = buf_height;
     query_terminal_size();
+
+    // Compute sidebar width and store for projection offset
+    sidebar_cols = (!data.empty() && !use_sixel) ? std::clamp(term_cols / 3, 20, 40) : 0;
+
     if (buf_width != old_w || buf_height != old_h)
         framebuffer.resize(buf_width * buf_height);
 
@@ -1333,12 +1341,18 @@ void UnicodeScreen::draw_screen() {
         case ViewMode::SURFACE:  project_surface();  break;
     }
 
+    // Compose all output into a single buffer to avoid flickering
+    std::string frame;
+    frame.reserve(term_cols * term_rows * 30);
+
     if (use_sixel)
-        render_sixel();
+        frame += render_sixel();
     else
-        render_braille();
-    draw_info_overlay();
-    draw_sidebar();
+        frame += render_braille();
+    frame += render_info_overlay();
+    frame += render_sidebar();
+
+    write(STDOUT_FILENO, frame.c_str(), frame.size());
 }
 
 // --- Input handling ---
