@@ -58,7 +58,8 @@ void UnicodeScreen::query_terminal_size() {
             pixel_height = ws.ws_ypixel;
         }
     }
-    info_rows = 1 + (int)data.size();
+    // Bottom info panel: 1 blank + 2 info lines per protein + 1 for sidebar info
+    info_rows = 1 + (int)data.size() + (sidebar_info.empty() ? 0 : 1);
 
     if (use_sixel) {
         // Pixel-level resolution via Sixel
@@ -1166,22 +1167,40 @@ std::string UnicodeScreen::render_info_overlay() {
     std::string out;
     out += "\033[0m\n";
 
+    RGB accent = palette_colors.empty() ? fg_color : palette_colors[0];
+    RGB dim_fg = {(uint8_t)(fg_color.r * 2 / 3),
+                  (uint8_t)(fg_color.g * 2 / 3),
+                  (uint8_t)(fg_color.b * 2 / 3)};
+    RGB dim2_fg = {(uint8_t)(fg_color.r / 3),
+                   (uint8_t)(fg_color.g / 3),
+                   (uint8_t)(fg_color.b / 3)};
+
+    auto set_fg = [](RGB c) -> std::string {
+        return "\033[38;2;" + std::to_string(c.r) + ";" +
+               std::to_string(c.g) + ";" + std::to_string(c.b) + "m";
+    };
+
     for (size_t i = 0; i < data.size(); i++) {
         auto* p = data[i];
-        std::string name = p->get_file_name();
-        size_t slash = name.find_last_of('/');
-        if (slash != std::string::npos) name = name.substr(slash + 1);
 
-        RGB nc = interpolate_color((float)i / std::max(1, (int)data.size() - 1));
-        out += "\033[38;2;" + std::to_string(nc.r) + ";" +
-               std::to_string(nc.g) + ";" +
-               std::to_string(nc.b) + "m";
-        out += " " + name;
+        // PDB ID or filename (accent color)
+        std::string pid = p->get_pdb_id();
+        if (pid.empty()) {
+            pid = p->get_file_name();
+            size_t slash = pid.find_last_of('/');
+            if (slash != std::string::npos) pid = pid.substr(slash + 1);
+        }
+        out += set_fg(accent) + " " + pid;
 
-        out += "\033[38;2;" + std::to_string(fg_color.r * 2 / 3) + ";" +
-               std::to_string(fg_color.g * 2 / 3) + ";" +
-               std::to_string(fg_color.b * 2 / 3) + "m";
+        // Title (dim)
+        std::string title = p->get_title();
+        if (!title.empty()) {
+            std::string tc = title_case(title);
+            if ((int)tc.size() > term_cols / 2) tc = tc.substr(0, term_cols / 2 - 3) + "...";
+            out += set_fg(dim_fg) + "  " + tc;
+        }
 
+        // Chain/residue stats
         auto chain_lengths = p->get_chain_length();
         auto residue_counts = p->get_residue_count();
         int total_res = 0, total_chains = 0;
@@ -1190,19 +1209,30 @@ std::string UnicodeScreen::render_info_overlay() {
             auto it = residue_counts.find(cid);
             if (it != residue_counts.end()) total_res += it->second;
         }
-        out += "  " + std::to_string(total_chains) + " chain" +
+        out += set_fg(dim_fg) + "  " + std::to_string(total_chains) + " chain" +
                (total_chains > 1 ? "s" : "") + ", " +
-               std::to_string(total_res) + " residues";
+               std::to_string(total_res) + " res";
 
-        out += "  \033[38;2;" + std::to_string(fg_color.r / 3) + ";" +
-               std::to_string(fg_color.g / 3) + ";" +
-               std::to_string(fg_color.b / 3) + "m";
-        out += "[" + std::string(view_mode_name()) + "]";
-        out += " [" + std::string(color_scheme_name()) + "]";
-        out += " [" + std::string(palette_name()) + "]";
+        // Mode tags
+        out += set_fg(dim2_fg) + "  [" + std::string(view_mode_name()) + "]" +
+               " [" + std::string(color_scheme_name()) + "]" +
+               " [" + std::string(palette_name()) + "]";
 
         out += "\033[0m";
         if (i < data.size() - 1) out += "\n";
+    }
+
+    // Second line: sidebar info (method, resolution, weight, organism, etc.) joined compactly
+    if (!sidebar_info.empty()) {
+        out += "\n" + set_fg(dim2_fg) + " ";
+        bool first = true;
+        for (const auto& info_line : sidebar_info) {
+            if (info_line.empty()) continue;
+            if (!first) out += "  \xC2\xB7  ";  // " · " separator
+            out += info_line;
+            first = false;
+        }
+        out += "\033[0m";
     }
 
     return out;
@@ -1326,8 +1356,8 @@ void UnicodeScreen::draw_screen() {
     int old_w = buf_width, old_h = buf_height;
     query_terminal_size();
 
-    // Compute sidebar width and store for projection offset
-    sidebar_cols = (!data.empty() && !use_sixel) ? std::clamp(term_cols / 3, 20, 40) : 0;
+    // No sidebar — all info is in the bottom panel
+    sidebar_cols = 0;
 
     if (buf_width != old_w || buf_height != old_h)
         framebuffer.resize(buf_width * buf_height);
@@ -1350,7 +1380,6 @@ void UnicodeScreen::draw_screen() {
     else
         frame += render_braille();
     frame += render_info_overlay();
-    frame += render_sidebar();
 
     write(STDOUT_FILENO, frame.c_str(), frame.size());
 }
