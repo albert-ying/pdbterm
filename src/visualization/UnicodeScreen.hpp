@@ -68,6 +68,7 @@ private:
     int term_cols = 80;
     int term_rows = 24;
     int info_rows = 3;
+    int sidebar_cols = 0;  // sidebar width in terminal columns
     int buf_width;
     int buf_height;
 
@@ -100,7 +101,7 @@ private:
     std::string screen_mode;
     bool screen_show_structure;
     int structNum = -1;
-    float zoom_level = 2.8f;
+    float zoom_level = 3.8f;
     float focal_offset = 5.0f;
 
     // Auto-rotation
@@ -127,10 +128,10 @@ private:
     RGB get_chain_color(int chain_idx, int total_chains);
     RGB get_ss_color(char ss_type);
 
-    void render_braille();
-    void render_sixel();
-    void draw_info_overlay();
-    void draw_sidebar();
+    std::string render_braille();
+    std::string render_sixel();
+    std::string render_info_overlay();
+    std::string render_sidebar();
 
     const char* view_mode_name();
     const char* color_scheme_name();
